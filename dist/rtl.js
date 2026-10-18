@@ -120,13 +120,49 @@ export function plainClipboardText(input, mode = 'smart') {
     if (inCode) return '\u200e' + line;
     if (!line) return line;
     const mark = directionFor(line, mode) === 'rtl' ? '\u200f' : '\u200e';
-    return mark + line.replace(inlinePattern, (token, code, url, strong) => {
-      if (strong) return token;
-      if (code) return /[\u0590-\u06ff]/u.test(code) ? token : '\u2066' + token + '\u2069';
-      const [core, punctuation] = splitPunctuation(token);
-      return '\u2066' + core + '\u2069' + punctuation;
-    });
+    // RLM/LRM have broad messaging-client support. Do not add isolate controls,
+    // paragraph margins, NBSPs, or other characters that could turn into gaps.
+    return mark + line + mark;
   }).join('\n');
+}
+
+function escapeHTML(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function clipboardInlineHTML(text) {
+  let html = '';
+  let position = 0;
+  for (const match of text.matchAll(inlinePattern)) {
+    html += escapeHTML(text.slice(position, match.index));
+    const token = match[0];
+    if (match[1]) {
+      const direction = directionFor(token);
+      html += `<code dir="${direction}" style="direction:${direction};unicode-bidi:embed;font-family:monospace;">${escapeHTML(token.slice(1,-1))}</code>`;
+    } else if (match[3]) html += `<b>${clipboardInlineHTML(token.slice(2,-2))}</b>`;
+    else {
+      const [core, punctuation] = splitPunctuation(token);
+      html += `<span dir="ltr" style="direction:ltr;unicode-bidi:embed;">${escapeHTML(core)}</span>${escapeHTML(punctuation)}`;
+    }
+    position = match.index + token.length;
+  }
+  return html + escapeHTML(text.slice(position));
+}
+
+export function richClipboardHTML(input, mode = 'smart') {
+  let inCode = false;
+  const lines = cleanText(input).split('\n').map(line => {
+    if (/^\s*```/.test(line)) { inCode = !inCode; return ''; }
+    const dir = inCode ? 'ltr' : directionFor(line, mode);
+    const mark = dir === 'rtl' ? '\u200f' : '\u200e';
+    let content = inCode ? escapeHTML(line) : clipboardInlineHTML(line);
+    if (!inCode && /^\s*#{1,3}\s+/.test(line)) content = `<b>${clipboardInlineHTML(line.replace(/^\s*#{1,3}\s+/, ''))}</b>`;
+    const style = `direction:${dir};text-align:${dir === 'rtl' ? 'right' : 'left'};margin:0;padding:0;line-height:1.45;${inCode ? 'font-family:monospace;white-space:pre-wrap;' : ''}`;
+    return `<div dir="${dir}" style="${style}">${line ? mark + content + mark : '<br>'}</div>`;
+  });
+  // Build clipboard markup independently of the visual preview. Copying its
+  // <p> elements and spacer divs imports browser/email paragraph margins.
+  return `<div dir="rtl" style="direction:rtl;text-align:right;font-family:Arial,sans-serif;font-size:14px;line-height:1.45;margin:0;padding:0;">${lines.join('')}</div>`;
 }
 
 export function countText(text) {

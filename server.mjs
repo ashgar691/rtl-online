@@ -8,6 +8,10 @@ const port=Number(process.env.PORT)||4173;
 http.createServer(async(req,res)=>{
   try {
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/__qa/clipboard'){
+      const data=await readFile(path.join(root,'../tests/clipboard-preview.html'));
+      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(data);return;
+    }
     const file=path.resolve(root,'.'+decodeURIComponent(url.pathname==='/'?'/index.html':url.pathname));
     if(!file.startsWith(root+path.sep)){res.writeHead(403);res.end();return;}
     const data=await readFile(file);

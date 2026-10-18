@@ -1,4 +1,4 @@
-import {cleanText, renderText, plainClipboardText, countText} from './rtl.js';
+import {cleanText, renderText, plainClipboardText, richClipboardHTML, countText} from './rtl.js';
 
 const $ = selector => document.querySelector(selector);
 const input = $('#text-input');
@@ -116,42 +116,65 @@ function closeModeMenu() {
 }
 
 function exportedHTML() {
-  const clone = $('#result-text').cloneNode(true);
-  clone.removeAttribute('id');
-  clone.removeAttribute('tabindex');
-  clone.style.cssText = 'direction:rtl;text-align:right;font-family:Arial,sans-serif;font-size:16px;line-height:1.9;color:#202024;background:#fff;';
-  clone.querySelectorAll('p,li').forEach(element => {element.style.whiteSpace = 'pre-wrap';});
-  clone.querySelectorAll('pre').forEach(element => {element.style.cssText = 'direction:ltr;text-align:left;white-space:pre;overflow:auto;font-family:monospace;background:#f3f2f6;padding:16px;border-radius:8px;';});
-  clone.querySelectorAll('bdi,code').forEach(element => { element.style.unicodeBidi = 'isolate'; });
-  return clone.outerHTML;
+  return current ? richClipboardHTML(current.text, mode) : '';
 }
 
-function legacyCopy(text) {
-  const area = document.createElement('textarea');
-  area.value = text;
+function legacyCopy(text, html) {
+  const area = document.createElement(html ? 'div' : 'textarea');
+  if (html) {
+    area.contentEditable = 'true';
+    area.innerHTML = html; // Only our escaped, generated clipboard markup.
+  } else area.value = text;
   area.style.cssText = 'position:fixed;opacity:0;inset:0;pointer-events:none;';
   area.dir = 'rtl';
   document.body.append(area);
-  area.select();
-  const copied = document.execCommand('copy');
-  area.remove();
+  if (html) {
+    const range = document.createRange();
+    range.selectNodeContents(area);
+    const selection = window.getSelection();
+    selection.removeAllRanges();selection.addRange(range);
+  } else area.select();
+  const onCopy = event => {
+    if (!event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', text);
+    if (html) event.clipboardData.setData('text/html', html);
+  };
+  document.addEventListener('copy', onCopy);
+  let copied = false;
+  try { copied = document.execCommand('copy'); }
+  finally { document.removeEventListener('copy', onCopy); area.remove(); }
   return copied;
 }
 
-async function copyResult() {
+async function copyResult(target = 'gmail') {
   if (!current) return;
   const plain = plainClipboardText(current.text, mode);
-  let copied = false;
+  const html = target === 'gmail' ? exportedHTML() : null;
+  const button = target === 'gmail' ? $('#copy-result') : $('#copy-whatsapp');
+  let copied = html ? legacyCopy(plain, html) : false;
+  let copyMethod = copied ? 'copy-event' : '';
   try {
-    if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
-      await navigator.clipboard.write([new ClipboardItem({'text/plain':new Blob([plain], {type:'text/plain'}),'text/html':new Blob([exportedHTML()],{type:'text/html'})})]);
+    if (!copied && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+      const payload = {'text/plain':new Blob([plain], {type:'text/plain'})};
+      if (html) payload['text/html'] = new Blob([html],{type:'text/html'});
+      await navigator.clipboard.write([new ClipboardItem(payload)]);
       copied = true;
+      copyMethod = 'clipboard-api';
     }
   } catch { /* Text-only copy is useful when rich clipboard permission is unavailable. */ }
   if (!copied) {
-    try { await navigator.clipboard.writeText(plain); copied = true; }
-    catch { copied = legacyCopy(plain); }
+    // Keep rich RTL markup in the fallback, too; a text-only fallback silently
+    // loses the paragraph direction in Gmail.
+    copied = legacyCopy(plain, html);
+    if (copied) copyMethod = 'copy-event';
+    if (!copied) {
+      try { await navigator.clipboard.writeText(plain); copied = true; copyMethod = 'text-api'; }
+      catch { /* Offer a visible selection below. */ }
+    }
   }
+  button.dataset.copyMethod = copyMethod;
+  button.dataset.copyFormat = html && copyMethod !== 'text-api' ? 'html' : 'plain';
   if (!copied) {
     const selection = window.getSelection();
     const range = document.createRange();
@@ -160,10 +183,10 @@ async function copyResult() {
     notify('הדפדפן חסם העתקה. הטקסט מסומן — אפשר להעתיק עם Ctrl+C.');
     return;
   }
-  $('#copy-result span').textContent = 'הועתק!';
-  $('#copy-result use').setAttribute('href','#i-check');
-  notify('הטקסט הועתק. אפשר להדביק במקום הרצוי.');
-  setTimeout(() => {$('#copy-result span').textContent='העתקת הטקסט';$('#copy-result use').setAttribute('href','#i-copy');},2200);
+  button.querySelector('span').textContent = 'הועתק!';
+  button.querySelector('use').setAttribute('href','#i-check');
+  notify(target === 'gmail' ? 'הועתק ל־Gmail: כיוון RTL, בלי ריווח נוסף.' : 'הועתק ל־WhatsApp: טקסט נקי עם סימני כיוון RTL.');
+  setTimeout(() => {button.querySelector('span').textContent=target==='gmail'?'העתקה ל־Gmail':'העתקה ל־WhatsApp';button.querySelector('use').setAttribute('href','#i-copy');},2200);
 }
 
 function closeSidebar() {
@@ -214,7 +237,8 @@ document.querySelectorAll('[data-mode]').forEach(button => button.addEventListen
 }));
 document.addEventListener('click', event => {if (!event.target.closest('.mode-control')) closeModeMenu();});
 document.addEventListener('keydown', event => {if(event.key === 'Escape'){closeModeMenu();closeSidebar();}});
-$('#copy-result').addEventListener('click',copyResult);
+$('#copy-result').addEventListener('click',()=>copyResult('gmail'));
+$('#copy-whatsapp').addEventListener('click',()=>copyResult('whatsapp'));
 $('#download-result').addEventListener('click', () => {
   if (!current) return;
   const html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>הטקסט המסודר שלי</title></head><body style="max-width:850px;margin:40px auto;padding:20px;">' + exportedHTML() + '</body></html>';
